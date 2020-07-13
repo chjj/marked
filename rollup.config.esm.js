@@ -4,7 +4,7 @@ const license = require('rollup-plugin-license');
 module.exports = {
   input: 'src/marked.js',
   output: {
-    file: 'lib/marked.esm.js',
+    file: 'lib/marked.esm.mjs',
     format: 'esm'
   },
   plugins: [
