@@ -1,13 +1,12 @@
 const Lexer = require('./Lexer.js');
 const Parser = require('./Parser.js');
 const Tokenizer = require('./Tokenizer.js');
+const Hooks = require('./Hooks.js');
 const Renderer = require('./Renderer.js');
 const TextRenderer = require('./TextRenderer.js');
 const Slugger = require('./Slugger.js');
 const {
-  merge,
-  checkSanitizeDeprecation,
-  escape
+  merge
 } = require('./helpers.js');
 const {
   getDefaults,
@@ -34,14 +33,19 @@ function marked(src, opt, callback) {
   }
 
   opt = merge({}, marked.defaults, opt || {});
-  checkSanitizeDeprecation(opt);
 
   if (callback) {
-    const highlight = opt.highlight;
+    const highlight = opt.hooks.highlight;
     let tokens;
 
     try {
+      if (opt.hooks) {
+        src = opt.hooks.preprocess(src);
+      }
       tokens = Lexer.lex(src, opt);
+      if (opt.walkTokens) {
+        marked.walkTokens(tokens, opt.walkTokens);
+      }
     } catch (e) {
       return callback(e);
     }
@@ -52,23 +56,22 @@ function marked(src, opt, callback) {
       if (!err) {
         try {
           out = Parser.parse(tokens, opt);
+          if (opt.hooks) {
+            out = opt.hooks.postprocess(out);
+          }
         } catch (e) {
           err = e;
         }
       }
 
-      opt.highlight = highlight;
+      opt.hooks.highlight = highlight;
 
       return err
         ? callback(err)
         : callback(null, out);
     };
 
-    if (!highlight || highlight.length < 3) {
-      return done();
-    }
-
-    delete opt.highlight;
+    opt.hooks.highlight = Hooks.nullHooks.highlight;
 
     if (!tokens.length) return done();
 
@@ -103,19 +106,21 @@ function marked(src, opt, callback) {
   }
 
   try {
+    if (opt.hooks) {
+      src = opt.hooks.preprocess(src);
+    }
     const tokens = Lexer.lex(src, opt);
     if (opt.walkTokens) {
       marked.walkTokens(tokens, opt.walkTokens);
     }
-    return Parser.parse(tokens, opt);
+    let out = Parser.parse(tokens, opt);
+    if (opt.hooks) {
+      out = opt.hooks.postprocess(out);
+    }
+    return out;
   } catch (e) {
     e.message += '\nPlease report this to https://github.com/markedjs/marked.';
-    if (opt.silent) {
-      return '<p>An error occurred:</p><pre>'
-        + escape(e.message + '', true)
-        + '</pre>';
-    }
-    throw e;
+    (opt.hooks || new Hooks()).error(e);
   }
 }
 
@@ -167,6 +172,24 @@ marked.use = function(extension) {
       };
     }
     opts.tokenizer = tokenizer;
+  }
+  if (extension.hooks) {
+    const hooks = marked.defaults.hooks || new Hooks();
+    for (const prop in extension.hooks) {
+      if (extension.hooks[prop] === false) {
+        hooks[prop] = Hooks.nullHooks[prop];
+      } else {
+        const prevTokenizer = hooks[prop];
+        hooks[prop] = (...args) => {
+          let ret = extension.hooks[prop].apply(hooks, args);
+          if (ret === false) {
+            ret = prevTokenizer.apply(hooks, args);
+          }
+          return ret;
+        };
+      }
+    }
+    opts.hooks = hooks;
   }
   if (extension.walkTokens) {
     const walkTokens = marked.defaults.walkTokens;
@@ -226,7 +249,6 @@ marked.parseInline = function(src, opt) {
   }
 
   opt = merge({}, marked.defaults, opt || {});
-  checkSanitizeDeprecation(opt);
 
   try {
     const tokens = Lexer.lexInline(src, opt);
@@ -236,12 +258,7 @@ marked.parseInline = function(src, opt) {
     return Parser.parseInline(tokens, opt);
   } catch (e) {
     e.message += '\nPlease report this to https://github.com/markedjs/marked.';
-    if (opt.silent) {
-      return '<p>An error occurred:</p><pre>'
-        + escape(e.message + '', true)
-        + '</pre>';
-    }
-    throw e;
+    opt.hooks.error(e);
   }
 };
 
@@ -259,6 +276,8 @@ marked.Lexer = Lexer;
 marked.lexer = Lexer.lex;
 
 marked.Tokenizer = Tokenizer;
+
+marked.Hooks = Hooks;
 
 marked.Slugger = Slugger;
 
