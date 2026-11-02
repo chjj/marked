@@ -1337,4 +1337,29 @@ br
       assert.strictEqual(html.trim(), '<p><em>text</em></p>');
     });
   });
+
+  describe('tabs inside a fenced code block in a block quote', () => {
+    // html-differ treats whitespace in <pre> as equal, so these compare the
+    // tab byte itself. A tab the block quote marker does not consume stays a tab.
+    it('keeps a tab after the marker takes its optional space', () => {
+      assert.strictEqual(
+        marked.parse('> ```python\n> class P:\n> \tname: str\n> ```\n'),
+        '<blockquote>\n<pre><code class="language-python">class P:\n\tname: str\n</code></pre>\n</blockquote>\n',
+      );
+    });
+
+    it('keeps a later tab when the marker only uses part of the first one', () => {
+      assert.strictEqual(
+        marked.parse('> ```\n>\t\tfoo\n> ```\n', { gfm: false }),
+        '<blockquote>\n<pre><code>  \tfoo\n</code></pre>\n</blockquote>\n',
+      );
+    });
+
+    it('still expands tabs that are the indent of an indented code block', () => {
+      assert.strictEqual(
+        marked.parse('>\t\tfoo\n', { gfm: false }),
+        '<blockquote>\n<pre><code>  foo\n</code></pre>\n</blockquote>\n',
+      );
+    });
+  });
 });

@@ -54,6 +54,112 @@ function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, ra
   };
 }
 
+// Indented code wins over a fence, same as the block lexer. Tabs on the line
+// have already been expanded, so these match the space-only fence rules.
+const blockquoteIndentedCodeLine = /^(?: {4}| {0,3}\t)/;
+const blockquoteFenceOpenLine = /^( {0,3})(`{3,}(?=[^`]*$)|~{3,})/;
+const blockquoteFenceCloseLine = /^( {0,3})(`+|~+) *$/;
+
+interface BlockquoteFence {
+  char: string;
+  length: number;
+}
+
+function expandBlockquoteLeadingTabs(content: string, column: number, rules: Rules) {
+  const leading = content.match(rules.other.leadingSpaceTab);
+  if (!leading) {
+    return content;
+  }
+  return expandTabs(leading[0], column) + content.slice(leading[0].length);
+}
+
+/**
+ * Remove one block quote marker (`>` plus its one optional space column).
+ * A tab in that column keeps the rest of its tab stop as spaces.
+ */
+function stripOneBlockquoteMarker(line: string, rules: Rules) {
+  const markerMatch = line.match(rules.other.blockquoteStart);
+  if (!markerMatch) {
+    return null;
+  }
+
+  const marker = markerMatch[0];
+  let content = line.slice(marker.length);
+  // The marker occupies this many columns. Callers pass lines that already
+  // start at column 0 of the text being reparsed.
+  let column = marker.length;
+  if (content.charAt(0) === ' ') {
+    content = content.slice(1);
+    column += 1;
+  } else if (content.charAt(0) === '\t') {
+    const width = 4 - (column % 4);
+    content = ' '.repeat(width - 1) + content.slice(1);
+    column += 1;
+  }
+  return { content, column };
+}
+
+function blockquoteFenceOpen(line: string): BlockquoteFence | null {
+  if (blockquoteIndentedCodeLine.test(line)) {
+    return null;
+  }
+  const match = blockquoteFenceOpenLine.exec(line);
+  if (!match) {
+    return null;
+  }
+  return { char: match[2][0], length: match[2].length };
+}
+
+function isBlockquoteFenceClose(line: string, fence: BlockquoteFence) {
+  const match = blockquoteFenceCloseLine.exec(line);
+  return !!match && match[2][0] === fence.char && match[2].length >= fence.length;
+}
+
+/**
+ * Strip one marker from each line.
+ *
+ * Outside a fence, leading tabs are expanded from the column the marker left
+ * them on, so an indented code block still sees example 6 (`>\t\tfoo`) as
+ * spaces. Inside a fence those tabs are code, not structure, and stay tabs
+ * (#4184). The closing fence is expanded so its indent still matches.
+ */
+function stripBlockquoteLines(raw: string, rules: Rules) {
+  const lines = raw.split('\n');
+  let fence: BlockquoteFence | null = null;
+  const out = new Array<string>(lines.length);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const stripped = stripOneBlockquoteMarker(line, rules);
+    if (!stripped) {
+      if (fence && isBlockquoteFenceClose(line, fence)) {
+        fence = null;
+      }
+      out[i] = line;
+      continue;
+    }
+
+    const expanded = expandBlockquoteLeadingTabs(stripped.content, stripped.column, rules);
+    if (fence) {
+      if (isBlockquoteFenceClose(expanded, fence)) {
+        fence = null;
+        out[i] = expanded;
+      } else {
+        out[i] = stripped.content;
+      }
+      continue;
+    }
+
+    const opened = blockquoteFenceOpen(expanded);
+    if (opened) {
+      fence = opened;
+    }
+    out[i] = expanded;
+  }
+
+  return out.join('\n');
+}
+
 function indentCodeCompensation(raw: string, text: string, rules: Rules) {
   const matchIndentToCode = raw.match(rules.other.indentCodeCompensation);
 
@@ -233,16 +339,20 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         lines = lines.slice(i);
 
         const currentRaw = currentLines.join('\n');
-        const currentText = currentRaw
-          // a tab after the block quote marker runs to the next tab stop, and
-          // the marker only consumes one space of it; the rest is content
-          .replace(
-            this.rules.other.blockquoteMarkerWhitespace,
-            (_, marker: string, whitespace: string) => marker + expandTabs(whitespace, marker.length),
-          )
-          // precede setext continuation with 4 spaces so it isn't a setext
-          .replace(this.rules.other.blockquoteSetextReplace, '\n    $1')
-          .replace(this.rules.other.blockquoteSetextReplace2, '');
+        // Precede a lazy setext underline with 4 spaces so it isn't a heading.
+        // A real `> ===` still has its marker here, so it is left alone.
+        const prepared = currentRaw.replace(this.rules.other.blockquoteSetextReplace, '\n    $1');
+        // Pedantic mode flattens every tab to four spaces before block rules run,
+        // so keep the pre-#4184 expansion there. Otherwise only the marker's
+        // optional column is expanded up front; fence content keeps its tabs.
+        const currentText = this.options.pedantic
+          ? prepared
+            .replace(
+              this.rules.other.blockquoteMarkerWhitespace,
+              (_, marker: string, whitespace: string) => marker + expandTabs(whitespace, marker.length),
+            )
+            .replace(this.rules.other.blockquoteSetextReplace2, '')
+          : stripBlockquoteLines(prepared, this.rules);
         raw = raw ? `${raw}\n${currentRaw}` : currentRaw;
         text = text ? `${text}\n${currentText}` : currentText;
 
