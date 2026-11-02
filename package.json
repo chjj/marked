@@ -67,7 +67,7 @@
     "markdown-it": "15.0.3",
     "marked-highlight": "^2.2.4",
     "marked-man": "^2.1.1",
-    "recheck": "^4.6.1",
+    "recheck": "^4.6.2",
     "rimraf": "^6.1.3",
     "semantic-release": "^25.0.9",
     "titleize": "^4.0.0",
