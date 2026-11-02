@@ -13,10 +13,31 @@ import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
+function unescapeLinkLabel(text: string, rules: Rules): string {
+  let result = '';
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '`') {
+      const code = rules.inline.code.exec(text.slice(i));
+      if (code) {
+        result += code[0];
+        i += code[0].length - 1;
+        continue;
+      }
+    }
+    if (text[i] === '\\' && (text[i + 1] === '[' || text[i + 1] === ']')) {
+      result += text[i + 1];
+      i++;
+      continue;
+    }
+    result += text[i];
+  }
+  return result;
+}
+
 function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: _Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
   const href = link.href;
   const title = link.title || null;
-  const text = cap[1].replace(rules.other.outputLinkReplace, '$1');
+  const text = unescapeLinkLabel(cap[1], rules);
   const isImage = cap[0].charAt(0) === '!';
 
   const outerInLink = lexer.state.inLink;
@@ -775,9 +796,27 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (this.lexer.state.linkParenPossible === false) {
       return undefined;
     }
-    const cap = this.rules.inline.link.exec(src);
+    let cap = this.rules.inline.link.exec(src);
     if (cap) {
-      const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+      let labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+      if (cap[1].includes('`')) {
+        const labelEnd = src.indexOf('](', labelStart);
+        if (labelEnd > -1) {
+          const trimmedLabel = src.slice(labelStart, labelEnd);
+          if (trimmedLabel.length < cap[1].length) {
+            const hrefClose = src.indexOf(')', labelEnd + 2);
+            if (hrefClose > -1) {
+              const fixedSrc = src.slice(0, labelStart) + trimmedLabel + src.slice(labelEnd, hrefClose + 1);
+              const fixedCap = this.rules.inline.link.exec(fixedSrc);
+              if (fixedCap) {
+                cap = fixedCap;
+                labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+              }
+            }
+          }
+        }
+      }
+
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
         return;
       }
