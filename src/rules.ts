@@ -43,6 +43,9 @@ try {
 export const other = {
   codeRemoveIndent: /^(?: {0,3}\t| {1,4})/gm,
   outputLinkReplace: /\\([\[\]])/g,
+  // Same unescape, but a code span (same shape as inline code) or a bare backtick
+  // run is copied through: a backslash inside a code span is literal.
+  outputLinkReplaceCode: /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\[\]])/g,
   indentCodeCompensation: /^(\s+)(?:```)/,
   beginningSpace: /^\s+/,
   endingHash: /#$/,
@@ -477,15 +480,29 @@ const _inlineLabelBrackets = /\[(?:\\[\s\S]|[^\[\]\\])*\]/;
 // CommonMark lets the brackets in a link label nest to any depth, which a regex
 // cannot follow, so it stops at a fixed one. Two levels is what the spec suite
 // asks for: a third and a fourth flip no further example.
+// The code alternative does not require the two backtick runs to be the same
+// length; a backreference here would renumber the href and title groups.
+// `Tokenizer.link` measures the label again when it contains a backtick.
 const _inlineLabel = edit(/(?:\[(?:brackets|\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\])|[^\[\]\\`])*?/)
   .replace('brackets', _inlineLabelBrackets)
   .getRegex();
 
+const _linkHref = /<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]+|(?=\))/;
+// Same as the definition title: the escaped character is not the closer.
+const _linkTitle = /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\((?:\\[\s\S]|[^)\\])*\)/;
+
 const link = edit(/^!?\[(label)\]\([ \t\n]*(href)(?:(?:[ \t]+(?:\n[ \t]*)?|\n[ \t]*)(title))?[ \t\n]*\)/)
   .replace('label', _inlineLabel)
-  .replace('href', /<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]+|(?=\))/)
-  // Same as the definition title: the escaped character is not the closer.
-  .replace('title', /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\((?:\\[\s\S]|[^)\\])*\)/)
+  .replace('href', _linkHref)
+  .replace('title', _linkTitle)
+  .getRegex();
+
+// The destination/title tail of `link`, used when a code span forces the label
+// to be measured again (see Tokenizer.link). Same pieces as `link` so the two
+// cannot drift.
+const linkTail = edit(/^\]\([ \t\n]*(href)(?:(?:[ \t]+(?:\n[ \t]*)?|\n[ \t]*)(title))?[ \t\n]*\)/)
+  .replace('href', _linkHref)
+  .replace('title', _linkTitle)
   .getRegex();
 
 const reflink = edit(/^!?\[(label)\]\[(ref)\]/)
@@ -551,6 +568,7 @@ const inlineNormal = {
   emStrongRDelimUnd,
   escape,
   link,
+  linkTail,
   nolink,
   punctuation,
   reflink,

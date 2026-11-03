@@ -18,7 +18,15 @@ import type { MarkedOptions } from './MarkedOptions.ts';
 function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: _Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
   const href = link.href;
   const title = link.title || null;
-  const text = cap[1].replace(rules.other.outputLinkReplace, '$1');
+  // Only \[ and \] are unescaped. A label with no backslash is already final, and
+  // one with no backtick can use the plain unescape. Code spans keep their
+  // backslashes; `$1` over the whole label would drop those too.
+  let text = cap[1];
+  if (text.includes('\\')) {
+    text = text.includes('`')
+      ? text.replace(rules.other.outputLinkReplaceCode, (match, _code, bracket) => bracket ?? match)
+      : text.replace(rules.other.outputLinkReplace, '$1');
+  }
   const isImage = cap[0].charAt(0) === '!';
 
   const outerInLink = lexer.state.inLink;
@@ -78,6 +86,98 @@ function indentCodeCompensation(raw: string, text: string, rules: Rules) {
       return node.slice(Math.min(indentInNode.length, indentToCode.length));
     })
     .join('\n');
+}
+
+/**
+ * Index of the `]` that ends an inline link/image label starting at
+ * `labelStart` (the first character inside the opening bracket).
+ *
+ * Code spans bind tighter than link brackets and their contents are literal,
+ * so they are skipped whole, using the same delimiter rules as `codespan`.
+ * Backslash escapes are skipped outside code spans. A depth-0 `]` ends the
+ * label when an inline destination follows. Any other depth-0 `]` deactivates
+ * the opener, so a later `](` cannot close it. Returns -1 when this `[` has
+ * no inline destination before `limit` (the regex match's `]`).
+ */
+function findInlineLinkLabelEnd(src: string, labelStart: number, limit: number, rules: Rules) {
+  const codeRe = rules.inline.code;
+  let depth = 0;
+  const end = Math.min(src.length, limit);
+
+  for (let i = labelStart; i < end; i++) {
+    const char = src[i];
+    if (char === '\\') {
+      i++;
+      continue;
+    }
+
+    if (char === '`') {
+      codeRe.lastIndex = 0;
+      const code = codeRe.exec(src.slice(i));
+      if (code && code.index === 0 && code[0].length > 0) {
+        i += code[0].length - 1;
+      } else {
+        // An unmatched backtick run is literal, same as an unclosed code span.
+        while (src[i + 1] === '`') {
+          i++;
+        }
+      }
+      continue;
+    }
+
+    if (char === '[') {
+      depth++;
+      continue;
+    }
+
+    if (char !== ']') {
+      continue;
+    }
+
+    if (depth > 0) {
+      depth--;
+      continue;
+    }
+
+    // `](` with no space between them. A failed bracket drops this opener.
+    if (src[i + 1] === '(') {
+      const tail = rules.inline.linkTail.exec(src.slice(i));
+      if (tail) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  return -1;
+}
+
+/**
+ * The label rule pairs backtick runs of different lengths, so a code span can
+ * hide the real `]` or borrow one from a later link. Measure the label the way
+ * code spans are parsed and rebuild the match from that `]`.
+ */
+function retargetLinkLabel(src: string, cap: RegExpExecArray, rules: Rules) {
+  const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+  const regexEnd = labelStart + cap[1].length;
+  const labelEnd = findInlineLinkLabelEnd(src, labelStart, regexEnd, rules);
+  // Only pull the end earlier. Extending it past the regex match steals a later
+  // `](` that CommonMark leaves outside this link.
+  if (labelEnd < 0 || labelEnd >= regexEnd) {
+    return cap;
+  }
+
+  const tail = rules.inline.linkTail.exec(src.slice(labelEnd));
+  if (!tail) {
+    return cap;
+  }
+
+  return [
+    src.slice(0, labelEnd) + tail[0],
+    src.slice(labelStart, labelEnd),
+    tail[1] ?? '',
+    tail[2] ?? '',
+  ];
 }
 
 function isLabelEndInsideToken(src: string, label: string, labelStart: number, rules: Rules) {
@@ -787,7 +887,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (this.lexer.state.linkParenPossible === false) {
       return undefined;
     }
-    const cap = this.rules.inline.link.exec(src);
+    let cap: RegExpExecArray | string[] | null = this.rules.inline.link.exec(src);
+    if (cap && !this.options.pedantic && cap[1].includes('`')) {
+      cap = retargetLinkLabel(src, cap as RegExpExecArray, this.rules);
+    }
     if (cap) {
       const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
