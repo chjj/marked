@@ -402,6 +402,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             : this.rules.other.headingBeginRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
           const blockquoteBeginRegex = this.rules.other.blockquoteBeginRegex(indent);
+          // whether `line` is a lazy paragraph continuation rather than item content
+          let lazyLine = false;
 
           // Check if following lines should be included in List Item
           while (src) {
@@ -449,38 +451,44 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
             if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || !nextLine.trim()) { // Dedent if possible
               itemContents += '\n' + nextLineWithoutTabs.slice(indent);
+              lazyLine = false;
             } else {
               // not enough indentation
               if (blankLine) {
                 break;
               }
 
-              // paragraph continuation unless last line was a different block level element
-              if (line.replace(this.rules.other.tabCharGlobal, '    ').search(this.rules.other.nonSpaceChar) >= 4) { // indented code block
-                break;
-              }
-              if (fencesBeginRegex.test(line)) {
-                break;
-              }
-              if (headingBeginRegex.test(line)) {
-                break;
-              }
-              if (htmlBeginRegex.test(line)) {
-                break;
-              }
-              if (hrRegex.test(line)) {
-                break;
+              // paragraph continuation unless last line was a different block level element.
+              // A lazy last line was paragraph text, and cutting the item indent off it
+              // could make it look like the start of a block, so it is not checked
+              if (!lazyLine) {
+                if (line.replace(this.rules.other.tabCharGlobal, '    ').search(this.rules.other.nonSpaceChar) >= 4) { // indented code block
+                  break;
+                }
+                if (fencesBeginRegex.test(line)) {
+                  break;
+                }
+                if (headingBeginRegex.test(line)) {
+                  break;
+                }
+                if (htmlBeginRegex.test(line)) {
+                  break;
+                }
+                if (hrRegex.test(line)) {
+                  break;
+                }
               }
 
               // A lazy continuation can look like a setext underline after
               // list indentation is removed. Keep it in the paragraph.
               const setextContinuation = !this.options.pedantic
                 && /^ {0,3}(?:=+|-+) *$/.test(nextLine)
-                && this.rules.block.lheading.test(`${line}\n${nextLine}`);
+                && (lazyLine || this.rules.block.lheading.test(`${line}\n${nextLine}`));
               const continuation = setextContinuation
                 ? `    ${nextLineWithoutTabs.replace(/^ {0,3}/, '')}`
                 : nextLine;
               itemContents += '\n' + continuation;
+              lazyLine = true;
             }
 
             blankLine = !nextLine.trim();
